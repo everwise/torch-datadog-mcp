@@ -1,0 +1,41 @@
+[project]
+name = "torch-datadog-mcp"
+version = "0.1.0"
+description = "DataDog MCP server for log search and monitoring integration"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    {name = "Torch Team"}
+]
+dependencies = [
+    "fastmcp>=2.0.0",
+    "datadog-api-client>=2.28.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.1.0",
+]
+
+[tool.uv]
+dev-dependencies = []
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = []
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[project.scripts]
+datadog-mcp = "datadog_mcp.server:main"

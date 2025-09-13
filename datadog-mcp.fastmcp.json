@@ -1,0 +1,63 @@
+{
+  "name": "DataDog Logs Server",
+  "description": "DataDog MCP server for log search and monitoring integration",
+  "version": "0.1.0",
+  "author": "Torch Team",
+  "license": "MIT",
+  "dependencies": [
+    "fastmcp>=2.0.0",
+    "datadog-api-client>=2.28.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "python-dotenv>=1.0.0"
+  ],
+  "env": {
+    "DD_API_KEY": {
+      "description": "DataDog API key (required)",
+      "required": true
+    },
+    "DD_APP_KEY": {
+      "description": "DataDog Application key (required)",
+      "required": true
+    },
+    "DD_SITE": {
+      "description": "DataDog site (default: datadoghq.com)",
+      "required": false,
+      "default": "datadoghq.com"
+    }
+  },
+  "tools": [
+    {
+      "name": "search_logs",
+      "description": "Search DataDog logs with a custom query"
+    },
+    {
+      "name": "search_meeting_logs",
+      "description": "Search for all logs related to a specific meeting"
+    },
+    {
+      "name": "search_user_logs",
+      "description": "Search for all logs related to a specific user"
+    },
+    {
+      "name": "search_webhook_events",
+      "description": "Search for webhook events related to a meeting"
+    },
+    {
+      "name": "search_errors",
+      "description": "Search for recent errors across services"
+    },
+    {
+      "name": "search_trace",
+      "description": "Search for all logs in a specific APM trace"
+    },
+    {
+      "name": "test_connection",
+      "description": "Test the DataDog API connection"
+    },
+    {
+      "name": "get_server_info",
+      "description": "Get server configuration information"
+    }
+  ]
+}
