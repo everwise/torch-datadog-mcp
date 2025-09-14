@@ -1,6 +1,5 @@
 """DataDog MCP server for log search and monitoring integration."""
 
-import json
 from typing import Dict, Any, Optional
 
 from fastmcp import FastMCP
@@ -235,7 +234,7 @@ async def get_server_info() -> Dict[str, Any]:
         'version': '0.1.0',
         'datadog_site': settings.site,
         'api_key_configured': bool(settings.api_key),
-        'app_key_configured': bool(settings.app_key),
+        'app_key_configured': bool(settings.application_key),
         'available_tools': [
             'search_logs',
             'search_meeting_logs',

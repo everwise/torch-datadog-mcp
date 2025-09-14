@@ -28,14 +28,13 @@ class DataDogLogsClient:
 
             DataDog requires both an API key and Application key for log searches:
             1. DD_API_KEY - Your DataDog API key (for authentication)
-            2. DD_APP_KEY - Your DataDog Application key (for authorization)
+            2. DD_APPLICATION_KEY - Your DataDog Application key (for authorization)
 
             Please set both in your .env file.
             """)
 
-        effective_app_key = settings.effective_app_key
-        if not effective_app_key:
-            raise ValueError("DD_APP_KEY or DD_APPLICATION_KEY not found in environment variables")
+        if not settings.application_key:
+            raise ValueError("DD_APPLICATION_KEY not found in environment variables")
 
         # Environment variables are already set by settings.model_post_init()
         # Set up configuration - it will read from environment
