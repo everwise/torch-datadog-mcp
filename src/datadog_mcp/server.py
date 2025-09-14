@@ -1,19 +1,14 @@
-"""DataDog MCP server for log search and monitoring integration."""
-
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 from fastmcp import FastMCP
 from .client import DataDogLogsClient
 
-# Create the MCP server
-mcp = FastMCP("DataDog Logs Server")
+# Create the MCP server instance
+mcp = FastMCP()
 
-# Initialize DataDog client
 _client = None
 
-
-def get_client() -> DataDogLogsClient:
-    """Get or create DataDog client instance."""
+def get_client():
     global _client
     if _client is None:
         try:
@@ -25,178 +20,162 @@ def get_client() -> DataDogLogsClient:
 
 @mcp.tool
 async def search_logs(
-    query: str,
+    query: str = "env:prod",
     hours: int = 1,
-    limit: int = 50
+    limit: int = 50,
+    cursor: str = None,
+    user_id: int = None,
+    meeting_id: int = None,
+    path_id: int = None,
+    assessment_id: int = None,
+    tenant_id: int = None,
+    service: str = None,
+    status: str = None
 ) -> Dict[str, Any]:
     """
-    Search DataDog logs with a custom query.
+    Search DataDog logs with filtering options for triage.
 
     Args:
-        query: DataDog search query (e.g., 'env:prod service:meeting status:ERROR')
+        query: Base DataDog search query (default: 'env:prod')
         hours: How many hours back to search (default: 1)
         limit: Maximum number of logs to return (default: 50)
+        cursor: Pagination cursor for retrieving subsequent pages (optional)
+        user_id: Filter by specific user ID
+        meeting_id: Filter by specific meeting ID
+        path_id: Filter by specific path ID
+        assessment_id: Filter by specific assessment ID
+        tenant_id: Filter by specific tenant ID
+        service: Filter by service (meeting, assessment, integration, etc.)
+        status: Filter by log status (ERROR, WARN, INFO)
 
     Returns:
-        Dict containing logs and search metadata
+        Dict containing filtered logs and search metadata
     """
     client = get_client()
     time_from = f"now-{hours}h"
 
+    # Build enhanced query with filters, exclude health checks
+    filters = ["-@path:*/health"]  # Exclude health check endpoints
+    if user_id:
+        filters.append(f"@user_id:{user_id}")
+    if meeting_id:
+        filters.append(f"@meeting_id:{meeting_id}")
+    if path_id:
+        filters.append(f"@path_id:{path_id}")
+    if assessment_id:
+        filters.append(f"@assessment_id:{assessment_id}")
+    if tenant_id:
+        filters.append(f"@tenant_id:{tenant_id}")
+    if service:
+        filters.append(f"service:{service}")
+    if status:
+        filters.append(f"status:{status}")
+
+    enhanced_query = query
+    if filters:
+        enhanced_query += " " + " ".join(filters)
+
     try:
         result = await client.search_logs(
-            query=query,
+            query=enhanced_query,
             time_from=time_from,
-            limit=limit
+            limit=limit,
+            cursor=cursor
         )
         return result
     except Exception as e:
         return {
             'error': str(e),
-            'query': query,
+            'query': enhanced_query,
             'hours': hours
         }
 
 
 @mcp.tool
-async def search_meeting_logs(
-    meeting_id: int,
-    hours: int = 168
+async def get_trace_logs(
+    trace_id: str,
+    hours: int = 1,
+    cursor: str = None
 ) -> Dict[str, Any]:
     """
-    Search for all logs related to a specific meeting.
+    Get all logs across ALL services for a given APM trace ID with pagination support.
 
     Args:
-        meeting_id: The meeting ID to search for
-        hours: How many hours back to search (default: 168 = 7 days)
+        trace_id: The APM trace ID to search for
+        hours: How many hours back to search (default: 1)
+        cursor: Pagination cursor for retrieving subsequent pages (optional)
 
     Returns:
-        Dict containing meeting-related logs
+        Dict containing all logs for the trace with pagination info
     """
     client = get_client()
 
     try:
-        result = await client.search_meeting_logs(meeting_id, hours)
+        result = await client.get_trace_logs(trace_id, hours, cursor)
         return result
     except Exception as e:
         return {
             'error': str(e),
-            'meeting_id': meeting_id,
+            'trace_id': trace_id,
             'hours': hours
         }
 
 
 @mcp.tool
-async def search_user_logs(
-    user_id: int,
+async def search_business_events(
+    event_type: str,
+    service: str = None,
     hours: int = 24
 ) -> Dict[str, Any]:
     """
-    Search for all logs related to a specific user.
+    Search for business events across services.
 
     Args:
-        user_id: The user ID to search for
+        event_type: Type of business event (e.g., 'meeting.started', 'meeting.ended')
+        service: Optional service filter (e.g., 'meeting', 'integration')
         hours: How many hours back to search (default: 24)
 
     Returns:
-        Dict containing user-related logs
+        Dict containing business event logs
     """
     client = get_client()
 
     try:
-        result = await client.search_user_logs(user_id, hours)
+        result = await client.search_business_events(event_type, service, hours)
         return result
     except Exception as e:
         return {
             'error': str(e),
-            'user_id': user_id,
-            'hours': hours
-        }
-
-
-@mcp.tool
-async def search_webhook_events(
-    meeting_id: int,
-    provider: Optional[str] = None,
-    hours: int = 168
-) -> Dict[str, Any]:
-    """
-    Search for webhook events related to a meeting.
-
-    Args:
-        meeting_id: The meeting ID to search for
-        provider: Optional provider filter ('zoom', 'whereby', or None for all)
-        hours: How many hours back to search (default: 168 = 7 days)
-
-    Returns:
-        Dict containing webhook events for the meeting
-    """
-    client = get_client()
-
-    try:
-        result = await client.search_webhook_events(meeting_id, provider, hours)
-        return result
-    except Exception as e:
-        return {
-            'error': str(e),
-            'meeting_id': meeting_id,
-            'provider': provider,
-            'hours': hours
-        }
-
-
-@mcp.tool
-async def search_errors(
-    service: Optional[str] = None,
-    hours: int = 2
-) -> Dict[str, Any]:
-    """
-    Search for recent errors across services.
-
-    Args:
-        service: Optional service filter (e.g., 'meeting', 'integration')
-        hours: How many hours back to search (default: 2)
-
-    Returns:
-        Dict containing recent error logs
-    """
-    client = get_client()
-
-    try:
-        result = await client.search_errors(service, hours)
-        return result
-    except Exception as e:
-        return {
-            'error': str(e),
+            'event_type': event_type,
             'service': service,
             'hours': hours
         }
 
 
 @mcp.tool
-async def search_trace(
-    trace_id: str,
+async def trace_request_flow(
+    request_id: str,
     hours: int = 1
 ) -> Dict[str, Any]:
     """
-    Search for all logs in a specific APM trace.
+    Track a request across multiple services using request_id or correlation IDs.
 
     Args:
-        trace_id: The trace ID to search for
+        request_id: The request ID or correlation ID to track
         hours: How many hours back to search (default: 1)
 
     Returns:
-        Dict containing all logs for the trace
+        Dict containing request flow logs across all services
     """
     client = get_client()
 
     try:
-        result = await client.search_trace(trace_id, hours)
+        result = await client.trace_request_flow(request_id, hours)
         return result
     except Exception as e:
         return {
             'error': str(e),
-            'trace_id': trace_id,
+            'request_id': request_id,
             'hours': hours
         }
 
@@ -209,15 +188,8 @@ async def test_connection() -> Dict[str, Any]:
     Returns:
         Dict containing connection status and test results
     """
-    try:
-        client = get_client()
-        result = await client.test_connection()
-        return result
-    except Exception as e:
-        return {
-            'status': 'error',
-            'message': f'Failed to test connection: {str(e)}'
-        }
+    client = get_client()
+    return await client.test_connection()
 
 
 @mcp.tool
@@ -228,21 +200,15 @@ async def get_server_info() -> Dict[str, Any]:
     Returns:
         Dict containing server information and configuration
     """
-    import os
-
     return {
-        'server_name': 'DataDog Logs Server',
-        'version': '0.1.0',
-        'datadog_site': os.environ.get('DD_SITE', 'datadoghq.com'),
-        'api_key_configured': bool(os.environ.get('DD_API_KEY')),
-        'app_key_configured': bool(os.environ.get('DD_APP_KEY')),
+        'server_name': 'torch-datadog-mcp',
+        'version': '1.0.0',
+        'description': 'DataDog log search MCP server for triage workflows',
         'available_tools': [
             'search_logs',
-            'search_meeting_logs',
-            'search_user_logs',
-            'search_webhook_events',
-            'search_errors',
-            'search_trace',
+            'get_trace_logs',
+            'search_business_events',
+            'trace_request_flow',
             'test_connection',
             'get_server_info',
             'debug_configuration'
@@ -259,48 +225,25 @@ async def debug_configuration() -> Dict[str, Any]:
         Dict containing detailed debugging information for troubleshooting API issues
     """
     import os
-    import sys
 
-    try:
-        client = get_client()
-        debug_info = getattr(client, 'debug_info', {})
-
-        api_key = os.environ.get('DD_API_KEY')
-        app_key = os.environ.get('DD_APP_KEY')
-        site = os.environ.get('DD_SITE', 'datadoghq.com')
-
-        return {
-            'status': 'success',
-            'direct_environment_auth': {
-                'api_key_present': bool(api_key),
-                'api_key_prefix': api_key[:8] + '...' if api_key else None,
-                'app_key_present': bool(app_key),
-                'app_key_prefix': app_key[:8] + '...' if app_key else None,
-                'site': site
-            },
-            'environment_variables': {
-                'DD_API_KEY': bool(os.environ.get('DD_API_KEY')),
-                'DD_APP_KEY': bool(os.environ.get('DD_APP_KEY')),
-                'DD_SITE': os.environ.get('DD_SITE')
-            },
-            'client_debug_info': debug_info,
-            'python_version': sys.version,
-            'datadog_client_available': True
+    return {
+        'datadog_credentials': {
+            'api_key_set': bool(os.environ.get('DD_API_KEY')),
+            'app_key_set': bool(os.environ.get('DD_APP_KEY')),
+            'site': os.environ.get('DD_SITE', 'datadoghq.com')
+        },
+        'environment_variables': {
+            'DD_API_KEY': 'SET' if os.environ.get('DD_API_KEY') else 'NOT_SET',
+            'DD_APP_KEY': 'SET' if os.environ.get('DD_APP_KEY') else 'NOT_SET',
+            'DD_SITE': os.environ.get('DD_SITE', 'datadoghq.com')
         }
-    except Exception as e:
-        return {
-            'status': 'error',
-            'error': str(e),
-            'error_type': type(e).__name__,
-            'environment_accessible': False,
-            'datadog_client_available': False
-        }
+    }
 
 
 def main():
-    """Main entry point for the DataDog MCP server."""
+    """Main entry point for the MCP server."""
     mcp.run()
 
-
-if __name__ == "__main__":
+# Start the server
+if __name__ == '__main__':
     main()

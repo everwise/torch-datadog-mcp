@@ -62,7 +62,8 @@ class DataDogLogsClient:
         time_from: Optional[str] = None,
         time_to: Optional[str] = None,
         limit: int = 50,
-        sort: str = "-timestamp"
+        sort: str = "-timestamp",
+        cursor: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Search DataDog logs with the given query.
@@ -83,13 +84,17 @@ class DataDogLogsClient:
             time_to = "now"
 
         # Build the request
+        page_params = {"limit": limit}
+        if cursor:
+            page_params["cursor"] = cursor
+
         body = LogsListRequest(
             filter=LogsQueryFilter(
                 query=query,
                 **{"from": time_from, "to": time_to},
             ),
             sort=LogsSort.TIMESTAMP_DESCENDING if sort == "-timestamp" else LogsSort.TIMESTAMP_ASCENDING,
-            page=LogsListRequestPage(limit=limit),
+            page=LogsListRequestPage(**page_params),
         )
 
         try:
@@ -100,13 +105,27 @@ class DataDogLogsClient:
             for log in response.data:
                 formatted_logs.append(self._format_log_entry(log))
 
-            return {
+            # Extract pagination info
+            next_cursor = None
+            if hasattr(response, 'meta') and hasattr(response.meta, 'page'):
+                next_cursor = getattr(response.meta.page, 'after', None)
+
+            result = {
                 'logs': formatted_logs,
                 'total_count': len(formatted_logs),
                 'query': query,
                 'time_range': f"{time_from} to {time_to}",
                 'elapsed_ms': getattr(response.meta, 'elapsed', None) if hasattr(response, 'meta') else None
             }
+
+            # Only include cursor info if there are more results
+            if next_cursor:
+                result['next_cursor'] = next_cursor
+                result['has_more'] = True
+            else:
+                result['has_more'] = False
+
+            return result
         except Exception as e:
             error_details = {
                 'logs': [],
@@ -129,106 +148,98 @@ class DataDogLogsClient:
 
             return error_details
 
-    async def search_meeting_logs(
+    # Removed redundant search methods - use main search_logs with filtering parameters
+
+    async def get_trace_logs(
         self,
-        meeting_id: int,
-        hours: int = 168
+        trace_id: str,
+        hours: int = 1,
+        cursor: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Search for all logs related to a specific meeting."""
-        query = f"env:prod service:meeting @meeting_id:{meeting_id}"
+        """Get all logs across ALL services for a given APM trace ID with pagination support."""
+        query = f"env:prod @dd.trace_id:{trace_id}"
         time_from = f"now-{hours}h"
 
-        return await self.search_logs(query, time_from=time_from, limit=100)
+        return await self.search_logs(
+            query=query,
+            time_from=time_from,
+            limit=200,
+            cursor=cursor
+        )
 
-    async def search_user_logs(
+    # Removed redundant search methods - use main search_logs with filtering parameters
+
+    async def search_business_events(
         self,
-        user_id: int,
+        event_type: str,
+        service: Optional[str] = None,
         hours: int = 24
     ) -> Dict[str, Any]:
-        """Search for all logs related to a specific user."""
-        query = f"env:prod service:meeting @user_id:{user_id}"
-        time_from = f"now-{hours}h"
-
-        return await self.search_logs(query, time_from=time_from, limit=100)
-
-    async def search_webhook_events(
-        self,
-        meeting_id: int,
-        provider: Optional[str] = None,
-        hours: int = 168
-    ) -> Dict[str, Any]:
-        """Search for webhook events related to a meeting."""
-        time_from = f"now-{hours}h"
-
-        # Search multiple patterns based on provider
-        queries = []
-        if not provider or provider.lower() == "whereby":
-            queries.append(f"env:prod service:integration @request_identifiers.resource_id:{meeting_id}")
-        if not provider or provider.lower() == "zoom":
-            queries.append(f"env:prod service:integration @payload.payload.object.id:{meeting_id}")
-
-        all_logs = []
-        for query in queries:
-            result = await self.search_logs(query, time_from=time_from, limit=50)
-            if result.get('logs'):
-                all_logs.extend(result['logs'])
-
-        return {
-            'logs': all_logs,
-            'total_count': len(all_logs),
-            'meeting_id': meeting_id,
-            'provider': provider or 'all',
-            'time_range': f"now-{hours}h to now",
-            'search_patterns': queries
-        }
-
-    async def search_errors(
-        self,
-        service: Optional[str] = None,
-        hours: int = 2
-    ) -> Dict[str, Any]:
-        """Search for recent errors across services."""
-        query_parts = ["env:prod", "status:ERROR"]
+        """Search for business events across services."""
+        query_parts = ["env:prod"]
 
         if service:
             query_parts.append(f"service:{service}")
+
+        # Add event type patterns based on observed log structures
+        if "meeting" in event_type:
+            query_parts.append(f"@event:{event_type}")
+        elif "webhook" in event_type:
+            query_parts.append(f"@payload.event:{event_type}")
+        else:
+            query_parts.append(f'"{event_type}"')
 
         query = " AND ".join(query_parts)
         time_from = f"now-{hours}h"
 
         return await self.search_logs(query, time_from=time_from, limit=100)
 
-    async def search_trace(
+    # Removed redundant search methods - use main search_logs with filtering parameters
+
+    # Removed health check method - not needed for triage workflows
+
+    async def trace_request_flow(
         self,
-        trace_id: str,
+        request_id: str,
         hours: int = 1
     ) -> Dict[str, Any]:
-        """Search for all logs in a specific APM trace."""
-        # Try different trace ID formats
+        """Track a request across multiple services using request_id or correlation IDs."""
+        # Try different request ID patterns found in logs
         queries = [
-            f"env:prod @dd.trace_id:{trace_id}",
-            f"env:prod @trace_id:{trace_id}",
-            f"env:prod dd.trace_id:{trace_id}"
+            f"env:prod @request_id:{request_id}",
+            f"env:prod @lambda.request_id:{request_id}",
+            f"env:prod @context.request.headers.X-Amzn-Trace-Id:{request_id}"
         ]
 
         time_from = f"now-{hours}h"
         all_logs = []
+        services_involved = set()
 
         for query in queries:
             result = await self.search_logs(query, time_from=time_from, limit=200)
             if result.get('logs'):
                 all_logs.extend(result['logs'])
+                for log in result['logs']:
+                    services_involved.add(log.get('service', 'unknown'))
+
+        # Sort by timestamp for flow visualization
+        all_logs.sort(key=lambda x: x.get('timestamp', ''))
 
         return {
             'logs': all_logs,
             'total_count': len(all_logs),
-            'trace_id': trace_id,
+            'request_id': request_id,
+            'services_involved': list(services_involved),
             'time_range': f"now-{hours}h to now",
-            'query_patterns_tried': queries
+            'flow_summary': {
+                'first_log': all_logs[0] if all_logs else None,
+                'last_log': all_logs[-1] if all_logs else None,
+                'duration_ms': None  # Could calculate if timestamps are available
+            }
         }
 
     def _format_log_entry(self, log_entry: Any) -> Dict[str, Any]:
-        """Format a log entry for JSON serialization."""
+        """Format a log entry for JSON serialization, filtering out noise for triage."""
         attributes = log_entry.attributes
 
         formatted = {
@@ -237,20 +248,58 @@ class DataDogLogsClient:
             'status': getattr(attributes, 'status', ''),
             'service': getattr(attributes, 'service', ''),
             'host': getattr(attributes, 'host', ''),
-            'tags': getattr(attributes, 'tags', []),
         }
 
-        # Add custom attributes if they exist
+        # Add custom attributes if they exist, but filter out noise
         if hasattr(attributes, 'attributes') and attributes.attributes:
             custom_attrs = dict(attributes.attributes)
 
-            # Extract commonly used fields to top level
-            interesting_attrs = ['meeting_id', 'user_id', 'trace_id', 'span_id', 'error_code', 'error_message']
-            for attr in interesting_attrs:
-                if attr in custom_attrs:
-                    formatted[attr] = custom_attrs[attr]
+            # Fields valuable for triage (keep these)
+            valuable_fields = [
+                'user_id', 'tenant_id', 'meeting_id', 'path_id', 'assessment_id',
+                'trace_id', 'span_id', 'execution_uuid', 'duration_ms', 'duration',
+                'status_code', 'error_code', 'error_message', 'level',
+                'lambda', 'dd', 'env', 'version'
+            ]
 
-            formatted['custom_attributes'] = custom_attrs
+            # Extract valuable fields to top level
+            for field in valuable_fields:
+                if field in custom_attrs:
+                    formatted[field] = custom_attrs[field]
+
+            # Clean context data - keep only useful parts
+            if 'context' in custom_attrs:
+                context = custom_attrs['context']
+                if isinstance(context, dict):
+                    clean_context = {}
+                    if 'request' in context:
+                        request = context['request']
+                        if isinstance(request, dict):
+                            clean_request = {
+                                'method': request.get('method'),
+                                'path': request.get('path'),
+                                'scheme': request.get('scheme')
+                            }
+                            # Preserve request.data if present
+                            if 'data' in request:
+                                clean_request['data'] = request['data']
+                            clean_context['request'] = clean_request
+                    if 'response' in context:
+                        response = context['response']
+                        if isinstance(response, dict):
+                            clean_response = {
+                                'status_code': response.get('status_code')
+                            }
+                            # Preserve response.data if present
+                            if 'data' in response:
+                                clean_response['data'] = response['data']
+                            clean_context['response'] = clean_response
+                    if clean_context:
+                        formatted['context'] = clean_context
+
+            # Remove noisy network data
+            if 'network' in custom_attrs:
+                del custom_attrs['network']
 
         return formatted
 
