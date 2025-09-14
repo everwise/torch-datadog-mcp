@@ -4,8 +4,6 @@ import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 
-from .settings import settings
-
 try:
     from datadog_api_client import ApiClient, Configuration
     from datadog_api_client.v2.api.logs_api import LogsApi
@@ -21,23 +19,38 @@ class DataDogLogsClient:
     """DataDog Logs API client for production debugging."""
 
     def __init__(self):
-        """Initialize the DataDog client with API and Application key authentication."""
-        if not settings.api_key:
+        """Initialize the DataDog client with direct environment variable authentication."""
+        # Check environment variables directly - don't go through pydantic
+        api_key = os.environ.get('DD_API_KEY')
+        app_key = os.environ.get('DD_APP_KEY')
+        site = os.environ.get('DD_SITE', 'datadoghq.com')
+
+        if not api_key:
             raise ValueError("""
             DD_API_KEY not found in environment variables.
 
             DataDog requires both an API key and Application key for log searches:
             1. DD_API_KEY - Your DataDog API key (for authentication)
-            2. DD_APPLICATION_KEY - Your DataDog Application key (for authorization)
+            2. DD_APP_KEY - Your DataDog Application key (for authorization)
 
-            Please set both in your .env file.
+            These must be set as environment variables in your claude.json configuration.
             """)
 
-        if not settings.application_key:
-            raise ValueError("DD_APPLICATION_KEY not found in environment variables")
+        if not app_key:
+            raise ValueError("DD_APP_KEY not found in environment variables")
 
-        # Environment variables are already set by settings.model_post_init()
-        # Set up configuration - it will read from environment
+        # Store debug info for troubleshooting
+        self.debug_info = {
+            'api_key_present': bool(api_key),
+            'api_key_prefix': api_key[:8] + '...' if api_key else None,
+            'app_key_present': bool(app_key),
+            'app_key_prefix': app_key[:8] + '...' if app_key else None,
+            'site': site,
+            'auth_source': 'direct_environment_variables',
+            'pydantic_bypassed': True
+        }
+
+        # DataDog Configuration() will read from environment variables
         configuration = Configuration()
 
         self.api_client = ApiClient(configuration)
@@ -95,12 +108,26 @@ class DataDogLogsClient:
                 'elapsed_ms': getattr(response.meta, 'elapsed', None) if hasattr(response, 'meta') else None
             }
         except Exception as e:
-            return {
+            error_details = {
                 'logs': [],
                 'error': str(e),
+                'error_type': type(e).__name__,
                 'query': query,
-                'time_range': f"{time_from} to {time_to}"
+                'time_range': f"{time_from} to {time_to}",
+                'debug_info': getattr(self, 'debug_info', None)
             }
+
+            # Add detailed HTTP error information if available
+            if hasattr(e, 'status'):
+                error_details['http_status'] = e.status
+            if hasattr(e, 'reason'):
+                error_details['http_reason'] = e.reason
+            if hasattr(e, 'body'):
+                error_details['http_body'] = e.body
+            if hasattr(e, 'headers'):
+                error_details['http_headers'] = dict(e.headers) if e.headers else None
+
+            return error_details
 
     async def search_meeting_logs(
         self,
@@ -228,24 +255,40 @@ class DataDogLogsClient:
         return formatted
 
     async def test_connection(self) -> Dict[str, Any]:
-        """Test DataDog API connection."""
+        """Test DataDog API connection with detailed debugging."""
         try:
             result = await self.search_logs("env:prod", limit=1)
 
             if result.get('error'):
                 return {
                     'status': 'error',
-                    'message': f"API test failed: {result['error']}"
+                    'message': f"API test failed: {result['error']}",
+                    'error_details': result,
+                    'debug_info': getattr(self, 'debug_info', None),
+                    'test_query': 'env:prod',
+                    'credentials_loaded': {
+                        'api_key': bool(os.environ.get('DD_API_KEY')),
+                        'app_key': bool(os.environ.get('DD_APP_KEY')),
+                        'site': os.environ.get('DD_SITE', 'datadoghq.com')
+                    }
                 }
             else:
                 return {
                     'status': 'success',
                     'message': 'DataDog API connection successful',
-                    'test_logs_found': result.get('total_count', 0)
+                    'test_logs_found': result.get('total_count', 0),
+                    'debug_info': getattr(self, 'debug_info', None)
                 }
 
         except Exception as e:
             return {
                 'status': 'error',
-                'message': f"Connection test failed: {str(e)}"
+                'message': f"Connection test failed: {str(e)}",
+                'error_type': type(e).__name__,
+                'debug_info': getattr(self, 'debug_info', None),
+                'credentials_loaded': {
+                    'api_key': bool(os.environ.get('DD_API_KEY')),
+                    'app_key': bool(os.environ.get('DD_APP_KEY')),
+                    'site': os.environ.get('DD_SITE', 'datadoghq.com')
+                }
             }

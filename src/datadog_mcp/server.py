@@ -4,7 +4,6 @@ from typing import Dict, Any, Optional
 
 from fastmcp import FastMCP
 from .client import DataDogLogsClient
-from .settings import settings
 
 # Create the MCP server
 mcp = FastMCP("DataDog Logs Server")
@@ -229,12 +228,14 @@ async def get_server_info() -> Dict[str, Any]:
     Returns:
         Dict containing server information and configuration
     """
+    import os
+
     return {
         'server_name': 'DataDog Logs Server',
         'version': '0.1.0',
-        'datadog_site': settings.site,
-        'api_key_configured': bool(settings.api_key),
-        'app_key_configured': bool(settings.application_key),
+        'datadog_site': os.environ.get('DD_SITE', 'datadoghq.com'),
+        'api_key_configured': bool(os.environ.get('DD_API_KEY')),
+        'app_key_configured': bool(os.environ.get('DD_APP_KEY')),
         'available_tools': [
             'search_logs',
             'search_meeting_logs',
@@ -243,9 +244,57 @@ async def get_server_info() -> Dict[str, Any]:
             'search_errors',
             'search_trace',
             'test_connection',
-            'get_server_info'
+            'get_server_info',
+            'debug_configuration'
         ]
     }
+
+
+@mcp.tool
+async def debug_configuration() -> Dict[str, Any]:
+    """
+    Get detailed debugging information about DataDog configuration and credentials.
+
+    Returns:
+        Dict containing detailed debugging information for troubleshooting API issues
+    """
+    import os
+    import sys
+
+    try:
+        client = get_client()
+        debug_info = getattr(client, 'debug_info', {})
+
+        api_key = os.environ.get('DD_API_KEY')
+        app_key = os.environ.get('DD_APP_KEY')
+        site = os.environ.get('DD_SITE', 'datadoghq.com')
+
+        return {
+            'status': 'success',
+            'direct_environment_auth': {
+                'api_key_present': bool(api_key),
+                'api_key_prefix': api_key[:8] + '...' if api_key else None,
+                'app_key_present': bool(app_key),
+                'app_key_prefix': app_key[:8] + '...' if app_key else None,
+                'site': site
+            },
+            'environment_variables': {
+                'DD_API_KEY': bool(os.environ.get('DD_API_KEY')),
+                'DD_APP_KEY': bool(os.environ.get('DD_APP_KEY')),
+                'DD_SITE': os.environ.get('DD_SITE')
+            },
+            'client_debug_info': debug_info,
+            'python_version': sys.version,
+            'datadog_client_available': True
+        }
+    except Exception as e:
+        return {
+            'status': 'error',
+            'error': str(e),
+            'error_type': type(e).__name__,
+            'environment_accessible': False,
+            'datadog_client_available': False
+        }
 
 
 def main():
