@@ -30,7 +30,8 @@ async def search_logs(
     assessment_id: int = None,
     tenant_id: int = None,
     service: str = None,
-    status: str = None
+    status: str = None,
+    verbose: bool = False
 ) -> Dict[str, Any]:
     """
     Search DataDog logs with filtering options for triage.
@@ -47,6 +48,7 @@ async def search_logs(
         tenant_id: Filter by specific tenant ID
         service: Filter by service (meeting, assessment, integration, etc.)
         status: Filter by log status (ERROR, WARN, INFO)
+        verbose: If True, return all log fields except explicitly blacklisted ones
 
     Returns:
         Dict containing filtered logs and search metadata
@@ -80,7 +82,8 @@ async def search_logs(
             query=enhanced_query,
             time_from=time_from,
             limit=limit,
-            cursor=cursor
+            cursor=cursor,
+            verbose=verbose
         )
         return result
     except Exception as e:

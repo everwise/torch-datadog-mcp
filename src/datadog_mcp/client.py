@@ -63,7 +63,8 @@ class DataDogLogsClient:
         time_to: Optional[str] = None,
         limit: int = 50,
         sort: str = "-timestamp",
-        cursor: Optional[str] = None
+        cursor: Optional[str] = None,
+        verbose: bool = False
     ) -> Dict[str, Any]:
         """
         Search DataDog logs with the given query.
@@ -74,6 +75,8 @@ class DataDogLogsClient:
             time_to: End time (ISO format or 'now' syntax). Default: now
             limit: Maximum number of logs to return
             sort: Sort order ('timestamp' or '-timestamp')
+            cursor: Pagination cursor for retrieving next page
+            verbose: If True, return all log fields except explicitly blacklisted ones
 
         Returns:
             Dict containing logs and metadata
@@ -85,7 +88,7 @@ class DataDogLogsClient:
 
         # Build the request
         page_params = {"limit": limit}
-        if cursor:
+        if cursor and cursor not in ("null", "None", ""):
             page_params["cursor"] = cursor
 
         body = LogsListRequest(
@@ -103,7 +106,7 @@ class DataDogLogsClient:
             # Format the logs for JSON serialization
             formatted_logs = []
             for log in response.data:
-                formatted_logs.append(self._format_log_entry(log))
+                formatted_logs.append(self._format_log_entry(log, verbose=verbose))
 
             # Extract pagination info
             next_cursor = None
@@ -157,7 +160,8 @@ class DataDogLogsClient:
         cursor: Optional[str] = None
     ) -> Dict[str, Any]:
         """Get all logs across ALL services for a given APM trace ID with pagination support."""
-        query = f"env:prod @dd.trace_id:{trace_id}"
+        # Use text search as trace IDs appear in message content, not structured fields
+        query = f'env:prod "{trace_id}"'
         time_from = f"now-{hours}h"
 
         return await self.search_logs(
@@ -238,8 +242,13 @@ class DataDogLogsClient:
             }
         }
 
-    def _format_log_entry(self, log_entry: Any) -> Dict[str, Any]:
-        """Format a log entry for JSON serialization, filtering out noise for triage."""
+    def _format_log_entry(self, log_entry: Any, verbose: bool = False) -> Dict[str, Any]:
+        """Format a log entry for JSON serialization, filtering out noise for triage.
+
+        Args:
+            log_entry: Raw log entry from DataDog API
+            verbose: If True, return all fields except explicitly blacklisted ones
+        """
         attributes = log_entry.attributes
 
         formatted = {
@@ -250,56 +259,66 @@ class DataDogLogsClient:
             'host': getattr(attributes, 'host', ''),
         }
 
-        # Add custom attributes if they exist, but filter out noise
+        # Add custom attributes if they exist
         if hasattr(attributes, 'attributes') and attributes.attributes:
             custom_attrs = dict(attributes.attributes)
 
-            # Fields valuable for triage (keep these)
-            valuable_fields = [
-                'user_id', 'tenant_id', 'meeting_id', 'path_id', 'assessment_id',
-                'trace_id', 'span_id', 'execution_uuid', 'duration_ms', 'duration',
-                'status_code', 'error_code', 'error_message', 'level',
-                'lambda', 'dd', 'env', 'version'
-            ]
+            if verbose:
+                # When verbose=True, include all fields except explicitly blacklisted noise
+                blacklisted_fields = [
+                    'network',  # Network data is too noisy
+                    'http',     # HTTP headers can contain tokens
+                    'headers',  # Headers may contain sensitive data
+                ]
 
-            # Extract valuable fields to top level
-            for field in valuable_fields:
-                if field in custom_attrs:
-                    formatted[field] = custom_attrs[field]
+                # Add all custom attributes except blacklisted ones
+                for field, value in custom_attrs.items():
+                    if field not in blacklisted_fields:
+                        formatted[field] = value
 
-            # Clean context data - keep only useful parts
-            if 'context' in custom_attrs:
-                context = custom_attrs['context']
-                if isinstance(context, dict):
-                    clean_context = {}
-                    if 'request' in context:
-                        request = context['request']
-                        if isinstance(request, dict):
-                            clean_request = {
-                                'method': request.get('method'),
-                                'path': request.get('path'),
-                                'scheme': request.get('scheme')
-                            }
-                            # Preserve request.data if present
-                            if 'data' in request:
-                                clean_request['data'] = request['data']
-                            clean_context['request'] = clean_request
-                    if 'response' in context:
-                        response = context['response']
-                        if isinstance(response, dict):
-                            clean_response = {
-                                'status_code': response.get('status_code')
-                            }
-                            # Preserve response.data if present
-                            if 'data' in response:
-                                clean_response['data'] = response['data']
-                            clean_context['response'] = clean_response
-                    if clean_context:
-                        formatted['context'] = clean_context
+            else:
+                # Original filtering - only keep valuable fields for triage
+                valuable_fields = [
+                    'user_id', 'tenant_id', 'meeting_id', 'path_id', 'assessment_id',
+                    'trace_id', 'span_id', 'execution_uuid', 'duration_ms', 'duration',
+                    'status_code', 'error_code', 'error_message', 'level',
+                    'lambda', 'dd', 'env', 'version'
+                ]
 
-            # Remove noisy network data
-            if 'network' in custom_attrs:
-                del custom_attrs['network']
+                # Extract valuable fields to top level
+                for field in valuable_fields:
+                    if field in custom_attrs:
+                        formatted[field] = custom_attrs[field]
+
+                # Clean context data - keep only useful parts
+                if 'context' in custom_attrs:
+                    context = custom_attrs['context']
+                    if isinstance(context, dict):
+                        clean_context = {}
+                        if 'request' in context:
+                            request = context['request']
+                            if isinstance(request, dict):
+                                clean_request = {
+                                    'method': request.get('method'),
+                                    'path': request.get('path'),
+                                    'scheme': request.get('scheme')
+                                }
+                                # Preserve request.data if present
+                                if 'data' in request:
+                                    clean_request['data'] = request['data']
+                                clean_context['request'] = clean_request
+                        if 'response' in context:
+                            response = context['response']
+                            if isinstance(response, dict):
+                                clean_response = {
+                                    'status_code': response.get('status_code')
+                                }
+                                # Preserve response.data if present
+                                if 'data' in response:
+                                    clean_response['data'] = response['data']
+                                clean_context['response'] = clean_response
+                        if clean_context:
+                            formatted['context'] = clean_context
 
         return formatted
 
