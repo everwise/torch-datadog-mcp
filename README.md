@@ -4,14 +4,41 @@ A [FastMCP](https://github.com/jlowin/fastmcp) server that provides DataDog log 
 
 ## Features
 
-- **Comprehensive Log Search**: Search DataDog logs using flexible queries
+- **Service-Aware Log Search**: Search DataDog logs with service-specific filtering for enhanced targeting
+- **Tasmania Space Filtering**: Filter tasmania service logs by space ID, user, or tenant
 - **Meeting-Specific Debugging**: Find all logs related to specific meetings (7-day default)
-- **User Activity Tracking**: Search user-related logs and activities
+- **User Activity Tracking**: Search user-related logs and activities across services
 - **Webhook Event Analysis**: Find integration webhook events for Zoom and Whereby
-- **Error Detection**: Search for recent errors across services
+- **Error Detection**: Search for recent errors across services with intelligent filtering
 - **APM Trace Correlation**: Find all logs for specific traces
 - **STDIO Transport**: Self-contained server for local MCP usage
 - **Environment-Based Configuration**: Secure API key management
+
+## Service-Specific Filtering
+
+The DataDog MCP server automatically adapts filtering based on the service being queried. Each service has its own set of available filters:
+
+### Supported Services
+
+| Service | Available Filters | Description |
+|---------|------------------|-------------|
+| `tasmania` | `user_id`, `tenant_id`, `space_id` | Coaching platform logs with space-based filtering |
+| `meeting` | `user_id`, `tenant_id`, `meeting_id`, `path_id` | Meeting service logs |
+| `assessment` | `user_id`, `tenant_id`, `assessment_id` | Assessment service logs |
+| `integration` | `user_id`, `tenant_id`, `meeting_id`, `provider` | Integration service logs |
+
+### Filter Examples
+
+```bash
+# Tasmania space-specific filtering
+search_logs(service="tasmania", space_id=169183, user_id=281157)
+
+# Meeting service error tracking
+search_logs(service="meeting", status="ERROR", meeting_id=136666)
+
+# Cross-service user activity
+search_logs(user_id=279361, hours=24)  # Works across all services
+```
 
 ## Installation
 
@@ -77,12 +104,40 @@ The server runs in STDIO mode by default, making it suitable for MCP clients.
 ### Available Tools
 
 #### `search_logs`
-Search DataDog logs with custom queries.
+Search DataDog logs with service-aware filtering. Supports service-specific filters for enhanced targeting.
 ```json
 {
-  "query": "env:prod service:meeting status:ERROR",
+  "query": "env:prod",
+  "service": "tasmania",
+  "user_id": 281157,
+  "tenant_id": 531,
+  "space_id": 169183,
   "hours": 2,
   "limit": 50
+}
+```
+
+**Service-Specific Filters:**
+- **tasmania**: `user_id`, `tenant_id`, `space_id` (for filtering by coaching spaces)
+- **meeting**: `user_id`, `tenant_id`, `meeting_id`, `path_id`
+- **assessment**: `user_id`, `tenant_id`, `assessment_id`
+- **integration**: `user_id`, `tenant_id`, `meeting_id`, `provider`
+
+**Examples:**
+```json
+// Filter tasmania logs by space ID
+{
+  "service": "tasmania",
+  "space_id": 169183,
+  "hours": 6
+}
+
+// Filter meeting service errors
+{
+  "service": "meeting",
+  "status": "ERROR",
+  "user_id": 279361,
+  "hours": 2
 }
 ```
 

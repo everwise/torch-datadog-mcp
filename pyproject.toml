@@ -5,7 +5,7 @@ description = "DataDog MCP server for log search and monitoring integration"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
-    {name = "Torch Team"}
+    {name = "torch"}
 ]
 dependencies = [
     "fastmcp>=2.0.0",
