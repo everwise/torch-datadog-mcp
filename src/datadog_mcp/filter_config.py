@@ -14,8 +14,8 @@ from dataclasses import dataclass
 class ServiceConfig:
     """Configuration for a specific service's filter mappings."""
 
-    # Direct field mappings for common filters
-    filters: Dict[str, str]
+    # Logical filter mappings (each key maps to list of possible fields for OR conditions)
+    logical_filters: Dict[str, List[str]]
     # Health check and other paths to exclude
     exclude_paths: List[str]
 
@@ -23,37 +23,41 @@ class ServiceConfig:
 # Service-specific filter configurations
 SERVICE_FILTERS: Dict[str, ServiceConfig] = {
     "tasmania": ServiceConfig(
-        filters={
-            "user_id": "@context.current_user_id",
-            "tenant_id": "@context.current_tenant_id",
-            # Space filtering by path pattern with wildcards
-            "space_id": "@context.path",  # Will use pattern like /api/v[12]/spaces/{id}*
+        logical_filters={
+            "user_id": ["@context.current_user_id", "@context.params.user_id"],
+            "tenant_id": ["@context.current_tenant_id"],
+            "space_id": ["@context.path"],  # Special handling for path patterns
+            "actor_email": [
+                "@statement.actor.mbox",
+                "@context.request.data.actor.mbox",
+            ],
         },
         exclude_paths=['"/api/v1/health"', '"/api/v1/pusher/auth"'],
     ),
     "meeting": ServiceConfig(
-        filters={
-            "user_id": "@user_id",
-            "tenant_id": "@tenant_id",
-            "meeting_id": "@meeting_id",
-            "path_id": "@path_id",
+        logical_filters={
+            "user_id": ["@user_id"],
+            "tenant_id": ["@tenant_id"],
+            "meeting_id": ["@meeting_id"],
+            "path_id": ["@context.params.notifiable_id"],
+            "actor_email": ["@events.actor.mbox"],
         },
         exclude_paths=['"/api/v1/health"'],
     ),
     "assessment": ServiceConfig(
-        filters={
-            "user_id": "@user_id",
-            "tenant_id": "@tenant_id",
-            "assessment_id": "@assessment_id",
+        logical_filters={
+            "user_id": ["@user_id"],
+            "tenant_id": ["@tenant_id"],
+            "assessment_id": ["@assessment_id"],
         },
         exclude_paths=['"/api/v1/health"'],
     ),
     "integration": ServiceConfig(
-        filters={
-            "user_id": "@user_id",
-            "tenant_id": "@tenant_id",
-            "meeting_id": "@meeting_id",
-            "provider": "@provider",
+        logical_filters={
+            "user_id": ["@user_id"],
+            "tenant_id": ["@tenant_id"],
+            "meeting_id": ["@meeting_id"],
+            "provider": ["@provider"],
         },
         exclude_paths=['"/api/v1/health"'],
     ),
@@ -69,6 +73,8 @@ def build_service_filters(
     assessment_id: Optional[int] = None,
     space_id: Optional[int] = None,
     status: Optional[str] = None,
+    # Logical filters that may map to multiple fields
+    actor_email: Optional[str] = None,
     **kwargs,
 ) -> List[str]:
     """
@@ -76,13 +82,14 @@ def build_service_filters(
 
     Args:
         service: Service name for service-specific filtering
-        user_id: Filter by user ID
+        user_id: Filter by user ID (creates OR condition for all user ID fields)
         tenant_id: Filter by tenant ID
         meeting_id: Filter by meeting ID
-        path_id: Filter by path ID
+        path_id: Filter by path ID (or notifiable_id for meeting service)
         assessment_id: Filter by assessment ID
         space_id: Filter by space ID (tasmania specific)
         status: Filter by log status
+        actor_email: Filter by actor email (creates OR condition for all email fields)
         **kwargs: Additional service-specific filters
 
     Returns:
@@ -114,20 +121,38 @@ def build_service_filters(
         "path_id": path_id,
         "assessment_id": assessment_id,
         "space_id": space_id,
+        "actor_email": actor_email,
     }
 
     for filter_name, value in filter_values.items():
         if value is not None:
-            if config and filter_name in config.filters:
-                field = config.filters[filter_name]
-                if filter_name == "space_id":
-                    # Special handling for space_id path filtering
-                    filters.append(f"{field}:/api/v1/spaces/{value}*")
+            if config and filter_name in config.logical_filters:
+                fields = config.logical_filters[filter_name]
+                if len(fields) == 1:
+                    # Single field - no OR needed
+                    field = fields[0]
+                    if filter_name == "space_id":
+                        # Special handling for space_id path filtering
+                        filters.append(f"{field}:/api/v1/spaces/{value}*")
+                    else:
+                        filters.append(f"{field}:{value}")
                 else:
-                    filters.append(f"{field}:{value}")
+                    # Multiple fields - create OR condition
+                    or_conditions = []
+                    for field in fields:
+                        if filter_name == "space_id":
+                            or_conditions.append(f"{field}:/api/v1/spaces/{value}*")
+                        else:
+                            or_conditions.append(f"{field}:{value}")
+                    filters.append(f"({' OR '.join(or_conditions)})")
             else:
                 # Fallback to default field mapping
                 filters.append(f"@{filter_name}:{value}")
+
+    # Handle additional filters from kwargs
+    for key, value in kwargs.items():
+        if value is not None:
+            filters.append(f"@{key}:{value}")
 
     return filters
 
@@ -147,12 +172,13 @@ def get_available_filters(service: Optional[str] = None) -> Dict[str, str]:
             "meeting_id": "Filter by meeting ID",
             "path_id": "Filter by path ID",
             "assessment_id": "Filter by assessment ID",
+            "actor_email": "Filter by actor email",
             "status": "Filter by log status",
         }
 
     return {
         key.replace("_", " ").title(): f"Filter by {key.replace('_', ' ')}"
-        for key in config.filters.keys()
+        for key in config.logical_filters.keys()
     }
 
 
@@ -179,7 +205,7 @@ def validate_service_filters(
         }
 
     errors = {}
-    valid_filters = set(config.filters.keys())
+    valid_filters = set(config.logical_filters.keys())
 
     for filter_name in filters.keys():
         if filter_name not in valid_filters:
@@ -197,12 +223,14 @@ def get_service_examples(service: str) -> Dict[str, Any]:
             "user_id": 214413,
             "tenant_id": 140,
             "space_id": 168565,
-            "description": "Filter by current user, tenant, or coaching space ID",
+            "actor_email": "user@example.com",
+            "description": "Filter by current user, tenant, space ID, or actor email",
         },
         "meeting": {
             "meeting_id": 136666,
             "path_id": 12345,
-            "description": "Filter by meeting or learning path",
+            "actor_email": "user@example.com",
+            "description": "Filter by meeting, learning path, or actor email",
         },
         "assessment": {"assessment_id": 789, "description": "Filter by assessment ID"},
         "integration": {

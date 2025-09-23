@@ -1,8 +1,8 @@
 """DataDog Logs API client for MCP server."""
 
 import os
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
+import json
+from typing import Dict, Optional, Any
 
 try:
     from datadog_api_client import ApiClient, Configuration
@@ -17,6 +17,11 @@ except ImportError as e:
     ) from e
 
 from .filter_config import build_service_filters
+
+# Response size limits to prevent overwhelming LLM context
+MAX_RESPONSE_SIZE_BYTES = 500_000  # 500KB - Conservative limit for LLM context
+MAX_SINGLE_LOG_SIZE_BYTES = 10_000  # 10KB per log entry max
+WARNING_RESPONSE_SIZE_BYTES = 100_000  # 100KB - Warning threshold
 
 
 class DataDogLogsClient:
@@ -61,6 +66,14 @@ class DataDogLogsClient:
 
         self.api_client = ApiClient(configuration)
         self.logs_api = LogsApi(self.api_client)
+
+    def _estimate_log_size(self, formatted_log: Dict[str, Any]) -> int:
+        """Estimate the JSON serialized size of a formatted log entry."""
+        try:
+            return len(json.dumps(formatted_log).encode("utf-8"))
+        except Exception:
+            # Fallback estimation if JSON serialization fails
+            return len(str(formatted_log).encode("utf-8"))
 
     async def search_logs(
         self,
@@ -113,10 +126,27 @@ class DataDogLogsClient:
         try:
             response = self.logs_api.list_logs(body=body)
 
-            # Format the logs for JSON serialization
+            # Format the logs with size tracking
             formatted_logs = []
-            for log in response.data:
-                formatted_logs.append(self._format_log_entry(log, verbose=verbose))
+            total_response_size = 0
+            truncated = False
+            skipped_logs = 0
+
+            for i, log in enumerate(response.data):
+                formatted_log = self._format_log_entry(log, verbose=verbose)
+                log_size = self._estimate_log_size(formatted_log)
+
+                # Check if adding this log would exceed size limits
+                if (
+                    total_response_size + log_size > MAX_RESPONSE_SIZE_BYTES
+                    or log_size > MAX_SINGLE_LOG_SIZE_BYTES
+                ):
+                    truncated = True
+                    skipped_logs = len(response.data) - i
+                    break
+
+                formatted_logs.append(formatted_log)
+                total_response_size += log_size
 
             # Extract pagination info
             next_cursor = None
@@ -133,7 +163,22 @@ class DataDogLogsClient:
                     if hasattr(response, "meta")
                     else None
                 ),
+                "response_size_bytes": total_response_size,
             }
+
+            # Add size-related warnings and info
+            if truncated:
+                result["truncated"] = True
+                result["truncation_reason"] = "Response size limit exceeded"
+                result["skipped_logs"] = skipped_logs
+                result["size_limit_bytes"] = MAX_RESPONSE_SIZE_BYTES
+                result["recommendation"] = (
+                    "Use more specific filters or pagination to reduce response size"
+                )
+            elif total_response_size > WARNING_RESPONSE_SIZE_BYTES:
+                result["size_warning"] = (
+                    f"Large response ({total_response_size:,} bytes). Consider more specific filters."
+                )
 
             # Only include cursor info if there are more results
             if next_cursor:
@@ -182,6 +227,8 @@ class DataDogLogsClient:
         assessment_id: Optional[int] = None,
         space_id: Optional[int] = None,
         status: Optional[str] = None,
+        # Logical filters (may map to multiple fields with OR conditions)
+        actor_email: Optional[str] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """
@@ -218,6 +265,8 @@ class DataDogLogsClient:
             assessment_id=assessment_id,
             space_id=space_id,
             status=status,
+            # Logical filters
+            actor_email=actor_email,
             **kwargs,
         )
 
@@ -318,6 +367,35 @@ class DataDogLogsClient:
             },
         }
 
+    def _truncate_large_field(self, value: Any, max_length: int = 1000) -> Any:
+        """Truncate large fields while preserving useful information."""
+        if isinstance(value, str):
+            if len(value) > max_length:
+                return f"{value[:max_length]}... [TRUNCATED: {len(value)} chars total]"
+            return value
+        elif isinstance(value, dict):
+            # For dicts, truncate recursively but stop at first level to avoid deep inspection
+            truncated = {}
+            for k, v in value.items():
+                if isinstance(v, str) and len(v) > max_length:
+                    truncated[k] = (
+                        f"{v[:max_length]}... [TRUNCATED: {len(v)} chars total]"
+                    )
+                elif isinstance(v, (dict, list)) and len(str(v)) > max_length:
+                    truncated[k] = (
+                        f"[LARGE OBJECT: {type(v).__name__} with {len(str(v))} chars]"
+                    )
+                else:
+                    truncated[k] = v
+            return truncated
+        elif isinstance(value, list):
+            if len(str(value)) > max_length:
+                return (
+                    f"[LARGE ARRAY: {len(value)} items, {len(str(value))} chars total]"
+                )
+            return value
+        return value
+
     def _format_log_entry(
         self, log_entry: Any, verbose: bool = False
     ) -> Dict[str, Any]:
@@ -329,9 +407,11 @@ class DataDogLogsClient:
         """
         attributes = log_entry.attributes
 
+        # Truncate message if it's too large (common source of bloat)
+        message = getattr(attributes, "message", "")
         formatted = {
             "timestamp": getattr(attributes, "timestamp", None),
-            "message": getattr(attributes, "message", ""),
+            "message": self._truncate_large_field(message, 2000),
             "status": getattr(attributes, "status", ""),
             "service": getattr(attributes, "service", ""),
             "host": getattr(attributes, "host", ""),
@@ -342,17 +422,19 @@ class DataDogLogsClient:
             custom_attrs = dict(attributes.attributes)
 
             if verbose:
-                # When verbose=True, include all fields except explicitly blacklisted noise
+                # When verbose=True, include all fields but with aggressive size limits
                 blacklisted_fields = [
                     "network",  # Network data is too noisy
                     "http",  # HTTP headers can contain tokens
                     "headers",  # Headers may contain sensitive data
+                    "request_body",  # Often contains large payloads
+                    "response_body",  # Often contains large payloads
                 ]
 
-                # Add all custom attributes except blacklisted ones
+                # Add all custom attributes except blacklisted ones, with size limits
                 for field, value in custom_attrs.items():
                     if field not in blacklisted_fields:
-                        formatted[field] = value
+                        formatted[field] = self._truncate_large_field(value, 1000)
 
             else:
                 # Original filtering - only keep valuable fields for triage
@@ -377,12 +459,14 @@ class DataDogLogsClient:
                     "version",
                 ]
 
-                # Extract valuable fields to top level
+                # Extract valuable fields to top level with size limits
                 for field in valuable_fields:
                     if field in custom_attrs:
-                        formatted[field] = custom_attrs[field]
+                        formatted[field] = self._truncate_large_field(
+                            custom_attrs[field], 1000
+                        )
 
-                # Clean context data - keep only useful parts
+                # Clean context data - keep only useful parts, REMOVE large payloads
                 if "context" in custom_attrs:
                     context = custom_attrs["context"]
                     if isinstance(context, dict):
@@ -395,9 +479,19 @@ class DataDogLogsClient:
                                     "path": request.get("path"),
                                     "scheme": request.get("scheme"),
                                 }
-                                # Preserve request.data if present
+                                # IMPORTANT: Remove large payloads that cause bloat
+                                # Only preserve data if it's small
                                 if "data" in request:
-                                    clean_request["data"] = request["data"]
+                                    data = request["data"]
+                                    data_str = str(data)
+                                    if (
+                                        len(data_str) > 500
+                                    ):  # Small limit for request data
+                                        clean_request["data_summary"] = (
+                                            f"[DATA REMOVED: {len(data_str)} chars]"
+                                        )
+                                    else:
+                                        clean_request["data"] = data
                                 clean_context["request"] = clean_request
                         if "response" in context:
                             response = context["response"]
@@ -405,9 +499,18 @@ class DataDogLogsClient:
                                 clean_response = {
                                     "status_code": response.get("status_code")
                                 }
-                                # Preserve response.data if present
+                                # IMPORTANT: Remove large response payloads
                                 if "data" in response:
-                                    clean_response["data"] = response["data"]
+                                    data = response["data"]
+                                    data_str = str(data)
+                                    if (
+                                        len(data_str) > 500
+                                    ):  # Small limit for response data
+                                        clean_response["data_summary"] = (
+                                            f"[DATA REMOVED: {len(data_str)} chars]"
+                                        )
+                                    else:
+                                        clean_response["data"] = data
                                 clean_context["response"] = clean_response
                         if clean_context:
                             formatted["context"] = clean_context

@@ -14,6 +14,108 @@ A [FastMCP](https://github.com/jlowin/fastmcp) server that provides DataDog log 
 - **STDIO Transport**: Self-contained server for local MCP usage
 - **Environment-Based Configuration**: Secure API key management
 
+## Response Size Safeguards
+
+The MCP server includes comprehensive safeguards to prevent overwhelming LLM contexts with massive log responses:
+
+### Automatic Protections
+- **Response Size Limit**: Responses are capped at 500KB total
+- **Per-Log Limits**: Individual log entries are limited to 10KB
+- **Payload Filtering**: Large request/response data is automatically truncated with summaries
+- **Query Validation**: Warns about overly broad searches before execution
+
+### Size Management Features
+- **Smart Truncation**: Large fields show truncated content with original size information
+- **Early Termination**: Processing stops when size limits are reached
+- **Clear Messaging**: Responses indicate when truncation occurs and why
+
+### Response Indicators
+```json
+{
+  "logs": [...],
+  "response_size_bytes": 45120,
+  "truncated": true,
+  "truncation_reason": "Response size limit exceeded",
+  "skipped_logs": 15,
+  "recommendation": "Use more specific filters or pagination to reduce response size",
+  "query_warnings": {
+    "risk_level": "high",
+    "warnings": ["Literal string search without specific field filters"],
+    "recommendations": ["Add specific field filters like service:meeting"]
+  }
+}
+```
+
+## Preview-Then-Execute Workflow (RECOMMENDED)
+
+For large or uncertain queries, use the two-step preview workflow to avoid overwhelming responses:
+
+### Step 1: Preview the Query
+```bash
+# Preview potentially large queries first
+preview = preview_search(query='env:prod "130361"', hours=24, limit=100)
+```
+
+**Preview Response:**
+```json
+{
+  "estimated_count": 1500,
+  "estimated_size_mb": 2.3,
+  "sample_logs": [...],  // 3 sample entries for structure
+  "cache_id": "abc123-def456-...",
+  "expires_in_seconds": 30,
+  "execution_recommendation": "CAUTION: Large response expected. Consider more specific filters.",
+  "query_warnings": {
+    "risk_level": "high",
+    "warnings": ["Literal string search without specific field filters"],
+    "recommendations": ["Add specific field filters like service:meeting"]
+  }
+}
+```
+
+### Step 2: Execute or Refine
+```bash
+# If preview looks reasonable, execute with cache_id
+if preview["execution_recommendation"] == "OK":
+    results = search_logs(cache_id=preview["cache_id"])
+else:
+    # Refine query based on recommendations
+    refined_results = search_logs(
+        service="meeting",
+        filters={"meeting_id": 130361},
+        hours=6
+    )
+```
+
+## Best Practices
+
+### ✅ Recommended Query Patterns
+```bash
+# BEST: Specific service + user filtering
+search_logs(service="meeting", user_id=281157, status="ERROR", hours=2)
+
+# PREVIEW FIRST: For uncertain queries
+preview = preview_search(query='env:prod "meeting_id"', hours=24, limit=100)
+
+# Service-specific with ID filters
+search_logs(service="meeting", filters={"meeting_id": 136666}, hours=6)
+
+# Error hunting with time limits
+search_logs(service="tasmania", status="ERROR", hours=1)
+```
+
+### ❌ Avoid These Patterns (Will Trigger Warnings)
+```bash
+# TOO BROAD - will likely hit size limits
+search_logs(query='env:prod "130361"', hours=24, limit=100)
+
+# GENERIC - no service filter
+search_logs(query="env:prod", hours=12)
+
+# HIGH VOLUME - long time range without filters
+search_logs(hours=48, limit=200)
+```
+
 ## Service-Specific Filtering
 
 The DataDog MCP server automatically adapts filtering based on the service being queried. Each service has its own set of available filters:

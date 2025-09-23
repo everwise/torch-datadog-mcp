@@ -2,16 +2,59 @@
 
 ## Implementation Summary ✅
 
-Successfully consolidated from **17 tools down to 7 focused tools**:
+Successfully consolidated from **17 tools down to 8 focused tools** with **response size safeguards**:
 
 ### Final Tool Structure:
-1. **`search_logs`** - Enhanced main search with filtering (user_id, meeting_id, path_id, assessment_id, tenant_id, service, status)
-2. **`get_trace_logs`** - APM trace expansion (key workflow)
-3. **`search_business_events`** - Business event analysis
-4. **`trace_request_flow`** - Request/execution tracking
-5. **`test_connection`**, **`get_server_info`**, **`debug_configuration`** - Debug tools
+1. **`preview_search`** - NEW: Preview query size/count before execution (30s cache) 🛡️
+2. **`search_logs`** - Enhanced main search with size safeguards and cache_id support 🛡️
+3. **`get_trace_logs`** - APM trace expansion (key workflow)
+4. **`search_business_events`** - Business event analysis
+5. **`trace_request_flow`** - Request/execution tracking
+6. **`test_connection`**, **`get_server_info`**, **`debug_configuration`** - Debug tools
+
+### 🛡️ NEW: Response Size Safeguards
+- **500KB response limit** to prevent LLM context overflow
+- **10KB per-log limits** with smart payload truncation
+- **Preview workflow** for uncertain queries
+- **Query validation** warnings for overly broad searches
 
 ## Example Triage Workflow
+
+### Step 0: Preview Large/Uncertain Queries (NEW!) 🛡️
+```bash
+# BEFORE running potentially large queries, preview them first
+preview = preview_search(
+  query='env:prod "130361"',
+  hours=24,
+  limit=100
+)
+```
+
+**Preview Response:**
+```json
+{
+  "estimated_count": 1500,
+  "estimated_size_mb": 2.3,
+  "sample_logs": [...],  // 3 sample entries
+  "cache_id": "abc123-...",
+  "execution_recommendation": "CAUTION: Large response expected",
+  "query_warnings": {
+    "risk_level": "high",
+    "warnings": ["Literal string search without specific field filters"],
+    "recommendations": ["Add specific field filters like service:meeting"]
+  }
+}
+```
+
+**Decision Logic:**
+```bash
+# If preview looks good, execute with cache_id
+if preview["execution_recommendation"] == "OK":
+    results = search_logs(cache_id=preview["cache_id"])
+else:
+    # Refine query based on recommendations
+    refined = search_logs(service="meeting", filters={"meeting_id": 130361})
+```
 
 ### Step 1: Find Meeting-Related Issues
 ```bash
