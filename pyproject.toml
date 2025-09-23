@@ -25,6 +25,7 @@ dev = [
 
 [tool.uv]
 dev-dependencies = []
+package = true
 
 [tool.ruff]
 line-length = 88
