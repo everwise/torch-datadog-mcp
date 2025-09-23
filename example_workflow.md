@@ -2,17 +2,17 @@
 
 ## Implementation Summary ✅
 
-Successfully consolidated from **17 tools down to 8 focused tools** with **response size safeguards**:
+Successfully consolidated from **17 tools down to 7 focused tools** with **response size safeguards** and **smart OR conditions**:
 
 ### Final Tool Structure:
-1. **`preview_search`** - NEW: Preview query size/count before execution (30s cache) 🛡️
+1. **`preview_search`** - Preview query size/count before execution (30s cache) 🛡️
 2. **`search_logs`** - Enhanced main search with size safeguards and cache_id support 🛡️
 3. **`get_trace_logs`** - APM trace expansion (key workflow)
 4. **`search_business_events`** - Business event analysis
 5. **`trace_request_flow`** - Request/execution tracking
 6. **`test_connection`**, **`get_server_info`**, **`debug_configuration`** - Debug tools
 
-### 🛡️ NEW: Response Size Safeguards
+### 🛡️ Response Size Safeguards
 - **500KB response limit** to prevent LLM context overflow
 - **10KB per-log limits** with smart payload truncation
 - **Preview workflow** for uncertain queries
@@ -20,11 +20,13 @@ Successfully consolidated from **17 tools down to 8 focused tools** with **respo
 
 ## Example Triage Workflow
 
-### Step 0: Preview Large/Uncertain Queries (NEW!) 🛡️
+### Step 0: Preview Large/Uncertain Queries 🛡️
 ```bash
 # BEFORE running potentially large queries, preview them first
 preview = preview_search(
-  query='env:prod "130361"',
+  service="meeting",
+  user_id=281157,
+  status="ERROR",
   hours=24,
   limit=100
 )
@@ -33,15 +35,15 @@ preview = preview_search(
 **Preview Response:**
 ```json
 {
-  "estimated_count": 1500,
-  "estimated_size_mb": 2.3,
+  "estimated_count": 45,
+  "estimated_size_mb": 0.2,
   "sample_logs": [...],  // 3 sample entries
   "cache_id": "abc123-...",
-  "execution_recommendation": "CAUTION: Large response expected",
+  "execution_recommendation": "OK: Reasonable query size. Safe to execute.",
   "query_warnings": {
-    "risk_level": "high",
-    "warnings": ["Literal string search without specific field filters"],
-    "recommendations": ["Add specific field filters like service:meeting"]
+    "risk_level": "low",
+    "warnings": [],
+    "recommendations": []
   }
 }
 ```
@@ -53,7 +55,12 @@ if preview["execution_recommendation"] == "OK":
     results = search_logs(cache_id=preview["cache_id"])
 else:
     # Refine query based on recommendations
-    refined = search_logs(service="meeting", filters={"meeting_id": 130361})
+    refined = search_logs(
+        service="meeting",
+        user_id=281157,
+        actor_email="user@example.com",
+        hours=2
+    )
 ```
 
 ### Step 1: Find Meeting-Related Issues
@@ -109,18 +116,25 @@ get_trace_logs(
 
 ### Step 3: Filter by Specific Objects
 ```bash
-# Focus on specific user's issues
+# Focus on specific user's issues (creates OR condition across multiple user ID fields)
 search_logs(
-  query="env:prod",
+  service="tasmania",
   user_id=279361,
   hours=6
 )
 
-# Or focus on specific meeting
+# Focus on specific meeting
 search_logs(
-  query="env:prod",
+  service="meeting",
   meeting_id=133728,
   hours=24
+)
+
+# Search by actor email (creates OR condition across multiple email fields)
+search_logs(
+  service="tasmania",
+  actor_email="user@example.com",
+  hours=12
 )
 ```
 
@@ -143,7 +157,12 @@ search_logs(
 - `duration_ms`, `status_code`, `error_code`
 - Clean request context (method, path, status_code only)
 
-### 4. **LLM-Friendly Structure**
+### 4. **Smart OR Conditions**
+- `user_id` for Tasmania service: `(@context.current_user_id:214413 OR @context.params.user_id:214413)`
+- `actor_email` for Tasmania service: `(@statement.actor.mbox:user@example.com OR @context.request.data.actor.mbox:user@example.com)`
+- Single, clean API parameters that automatically expand to comprehensive log coverage
+
+### 5. **LLM-Friendly Structure**
 - Easy tool selection (7 vs 17)
 - Clear filtering parameters
 - Predictable output format
@@ -153,14 +172,20 @@ search_logs(
 
 ### `/src/datadog_mcp/server.py`
 - Reduced from 19 tools to 7 tools
-- Enhanced `search_logs` with filtering parameters
-- Removed redundant search methods
+- Enhanced `search_logs` with logical filtering parameters
+- Added `preview_search` with cache support
+- Simplified email filters to single `actor_email` parameter
 
 ### `/src/datadog_mcp/client.py`
 - Removed 10+ redundant methods
 - Removed `get_service_health()`
 - Enhanced `_format_log_entry()` for noise filtering
-- Clean, focused implementation
+- Updated to support logical filters with OR conditions
+
+### `/src/datadog_mcp/filter_config.py`
+- **Smart OR conditions**: Single parameters expand to multiple field searches
+- Service-aware configuration for Tasmania, Meeting, Assessment, Integration
+- Automatic query optimization for comprehensive log coverage
 
 ## Next Steps
 1. Restart MCP server to register new tool signatures
