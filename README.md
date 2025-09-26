@@ -1,6 +1,6 @@
 # DataDog MCP Server
 
-A [FastMCP](https://github.com/jlowin/fastmcp) server that provides DataDog log search and monitoring capabilities through the Model Context Protocol (MCP).
+A [FastMCP](https://github.com/jlowin/fastmcp) server providing DataDog log search and monitoring capabilities through the Model Context Protocol (MCP).
 
 ## Features
 
@@ -52,23 +52,23 @@ For large or uncertain queries, use the two-step preview workflow to avoid overw
 
 ### Step 1: Preview the Query
 ```bash
-# Preview potentially large queries first
-preview = preview_search(query='env:prod "130361"', hours=24, limit=100)
+# Preview potentially large queries first using structured filters
+preview = preview_search(service="meeting", user_id=214413, hours=24, limit=100)
 ```
 
 **Preview Response:**
 ```json
 {
-  "estimated_count": 1500,
-  "estimated_size_mb": 2.3,
+  "estimated_count": 150,
+  "estimated_size_mb": 0.3,
   "sample_logs": [...],  // 3 sample entries for structure
   "cache_id": "abc123-def456-...",
   "expires_in_seconds": 30,
-  "execution_recommendation": "CAUTION: Large response expected. Consider more specific filters.",
+  "execution_recommendation": "OK",
   "query_warnings": {
-    "risk_level": "high",
-    "warnings": ["Literal string search without specific field filters"],
-    "recommendations": ["Add specific field filters like service:meeting"]
+    "risk_level": "low",
+    "warnings": [],
+    "recommendations": ["Query looks well-targeted with service and user filters"]
   }
 }
 ```
@@ -79,10 +79,11 @@ preview = preview_search(query='env:prod "130361"', hours=24, limit=100)
 if preview["execution_recommendation"] == "OK":
     results = search_logs(cache_id=preview["cache_id"])
 else:
-    # Refine query based on recommendations
+    # Refine with more specific structured filters
     refined_results = search_logs(
         service="meeting",
-        filters={"meeting_id": 130361},
+        meeting_id=136666,
+        status="ERROR",
         hours=6
     )
 ```
@@ -91,28 +92,33 @@ else:
 
 ### ✅ Recommended Query Patterns
 ```bash
-# BEST: Specific service + user filtering
-search_logs(service="meeting", user_id=281157, status="ERROR", hours=2)
+# BEST: Use structured filters with specific service
+search_logs(service="meeting", meeting_id=136666, status="ERROR", hours=2)
 
-# PREVIEW FIRST: For uncertain queries
-preview = preview_search(query='env:prod "meeting_id"', hours=24, limit=100)
+# User-specific filtering across services
+search_logs(service="tasmania", user_id=214413, hours=6)
 
-# Service-specific with ID filters
-search_logs(service="meeting", filters={"meeting_id": 136666}, hours=6)
+# Space-specific filtering (Tasmania coaching spaces)
+search_logs(service="tasmania", space_id=168565, hours=12)
 
-# Error hunting with time limits
-search_logs(service="tasmania", status="ERROR", hours=1)
+# Actor email filtering (finds user activity across log formats)
+search_logs(service="meeting", actor_email="user@example.com", hours=24)
+
+# PREVIEW FIRST: For potentially large result sets
+preview = preview_search(service="meeting", user_id=214413, hours=24)
+if preview["execution_recommendation"] == "OK":
+    results = search_logs(cache_id=preview["cache_id"])
 ```
 
 ### ❌ Avoid These Patterns (Will Trigger Warnings)
 ```bash
-# TOO BROAD - will likely hit size limits
-search_logs(query='env:prod "130361"', hours=24, limit=100)
+# WRONG: Raw DataDog query strings (defeats smart filtering)
+search_logs(query='env:prod "meeting_id:136666"', hours=24)
 
-# GENERIC - no service filter
+# TOO BROAD: No service or specific filters
 search_logs(query="env:prod", hours=12)
 
-# HIGH VOLUME - long time range without filters
+# HIGH VOLUME: Long time range without targeted filters
 search_logs(hours=48, limit=200)
 ```
 
@@ -132,14 +138,17 @@ The DataDog MCP server automatically adapts filtering based on the service being
 ### Filter Examples
 
 ```bash
-# Tasmania space-specific filtering
-search_logs(service="tasmania", space_id=169183, user_id=281157)
+# Tasmania space-specific filtering (maps to path filtering)
+search_logs(service="tasmania", space_id=168565, user_id=214413)
 
 # Meeting service error tracking
-search_logs(service="meeting", status="ERROR", meeting_id=136666)
+search_logs(service="meeting", meeting_id=136666, status="ERROR")
 
-# Cross-service user activity
-search_logs(user_id=279361, hours=24)  # Works across all services
+# Actor email filtering (finds user activity across different log formats)
+search_logs(service="meeting", actor_email="user@example.com", hours=24)
+
+# Integration provider filtering
+search_logs(service="integration", provider="zoom", meeting_id=136666)
 ```
 
 ## Installation
@@ -152,9 +161,36 @@ search_logs(user_id=279361, hours=24)  # Works across all services
 
 ### Setup
 
-1. **Clone or create the project**:
+#### Option 1: Install as Global CLI Tool (Recommended)
+
+1. **Install as a global CLI tool using uv**:
    ```bash
-   cd ~/dev/torch-datadog-mcp
+   uv tool install git+https://github.com/everwise/torch-datadog-mcp.git
+   ```
+
+   Or using pipx:
+   ```bash
+   pipx install git+https://github.com/everwise/torch-datadog-mcp.git
+   ```
+
+   Or add to project dependencies:
+   ```bash
+   uv add git+https://github.com/everwise/torch-datadog-mcp.git
+   ```
+
+2. **Set environment variables**:
+   ```bash
+   export DD_API_KEY=your_api_key_here
+   export DD_APP_KEY=your_app_key_here
+   export DD_SITE=datadoghq.com  # Optional, default shown
+   ```
+
+#### Option 2: Local Development Setup
+
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/everwise/torch-datadog-mcp.git
+   cd torch-datadog-mcp
    ```
 
 2. **Install dependencies**:
@@ -168,8 +204,8 @@ search_logs(user_id=279361, hours=24)  # Works across all services
 
 3. **Configure environment variables**:
    ```bash
-   cp .env.example .env
-   # Edit .env with your DataDog credentials
+   # Create .env file with your DataDog credentials
+   touch .env
    ```
 
 4. **Set your DataDog API keys** in `.env`:
@@ -191,13 +227,14 @@ search_logs(user_id=279361, hours=24)  # Works across all services
 ### Running the Server
 
 ```bash
-# Using uv
-uv run python -m datadog_mcp.server
-
-# Using the installed script
+# If installed from GitHub
 datadog-mcp
 
-# Or directly
+# For local development with uv
+uv run --project /path/to/torch-datadog-mcp datadog-mcp
+
+# Alternative local development commands
+uv run python -m datadog_mcp.server
 python src/datadog_mcp/server.py
 ```
 
@@ -205,101 +242,46 @@ The server runs in STDIO mode by default, making it suitable for MCP clients.
 
 ### Available Tools
 
-#### `search_logs`
-Search DataDog logs with service-aware filtering. Supports service-specific filters for enhanced targeting.
-```json
-{
-  "query": "env:prod",
-  "service": "tasmania",
-  "user_id": 281157,
-  "tenant_id": 531,
-  "space_id": 169183,
-  "hours": 2,
-  "limit": 50
-}
-```
+The server provides 8 focused tools for DataDog log analysis:
 
-**Service-Specific Filters:**
-- **tasmania**: `user_id`, `tenant_id`, `space_id` (for filtering by coaching spaces)
-- **meeting**: `user_id`, `tenant_id`, `meeting_id`, `path_id`
-- **assessment**: `user_id`, `tenant_id`, `assessment_id`
-- **integration**: `user_id`, `tenant_id`, `meeting_id`, `provider`
+#### Core Search Tools
+- **`preview_search`**: Preview query size and count before execution (30s cache)
+- **`search_logs`**: Enhanced main search with service-aware filtering and size safeguards
+- **`get_trace_logs`**: Get all logs for a specific APM trace ID
 
-**Examples:**
-```json
-// Filter tasmania logs by space ID
-{
-  "service": "tasmania",
-  "space_id": 169183,
-  "hours": 6
-}
+#### Business Analysis Tools
+- **`search_business_events`**: Find business events across services
+- **`trace_request_flow`**: Track requests across multiple services using correlation IDs
 
-// Filter meeting service errors
-{
-  "service": "meeting",
-  "status": "ERROR",
-  "user_id": 279361,
-  "hours": 2
-}
-```
+#### Utility Tools
+- **`test_connection`**: Test DataDog API connectivity
+- **`get_server_info`**: Get server configuration information
+- **`debug_configuration`**: Get detailed debugging information
 
-#### `search_meeting_logs`
-Find all logs related to a specific meeting (7-day default lookback).
-```json
-{
-  "meeting_id": 136666,
-  "hours": 168
-}
-```
+#### Service-Specific Structured Filters
+Use these structured filters with the `search_logs` tool (automatically maps to correct DataDog fields):
 
-#### `search_user_logs`
-Find all logs related to a specific user.
-```json
-{
-  "user_id": 12345,
-  "hours": 24
-}
-```
+**Tasmania Service:**
+- `user_id` → Maps to current user context fields
+- `tenant_id` → Maps to current tenant context
+- `space_id` → Maps to space path filtering (`/api/v1/spaces/{id}*`)
+- `actor_email` → Maps to statement actor email fields
 
-#### `search_webhook_events`
-Find webhook events for meeting integrations.
-```json
-{
-  "meeting_id": 136666,
-  "provider": "zoom",
-  "hours": 168
-}
-```
+**Meeting Service:**
+- `meeting_id` → Maps to meeting ID field
+- `user_id` → Maps to user ID field
+- `tenant_id` → Maps to tenant ID field
+- `path_id` → Maps to notifiable ID (learning paths)
+- `actor_email` → Maps to events actor email
 
-#### `search_errors`
-Find recent errors across services.
-```json
-{
-  "service": "meeting",
-  "hours": 2
-}
-```
+**Assessment Service:**
+- `assessment_id` → Maps to assessment ID field
+- `user_id`, `tenant_id` → Standard user/tenant filtering
 
-#### `search_trace`
-Find all logs for a specific APM trace.
-```json
-{
-  "trace_id": "1234567890abcdef",
-  "hours": 1
-}
-```
-
-#### `test_connection`
-Test DataDog API connectivity.
-```json
-{}
-```
-
-#### `get_server_info`
-Get server configuration information.
-```json
-{}
-```
+**Integration Service:**
+- `provider` → Filter by integration provider (zoom, whereby)
+- `meeting_id` → Maps to meeting ID field
+- `user_id`, `tenant_id` → Standard user/tenant filtering
 
 ## Claude Desktop Integration
 
@@ -308,13 +290,29 @@ Add this configuration to your Claude Desktop config file:
 ### macOS
 Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
+#### For Global Tool Installation (Recommended)
+```json
+{
+  "mcpServers": {
+    "datadog": {
+      "command": "datadog-mcp",
+      "env": {
+        "DD_API_KEY": "your_api_key_here",
+        "DD_APP_KEY": "your_app_key_here",
+        "DD_SITE": "datadoghq.com"
+      }
+    }
+  }
+}
+```
+
+#### For Local Development Setup
 ```json
 {
   "mcpServers": {
     "datadog": {
       "command": "uv",
-      "args": ["run", "python", "-m", "datadog_mcp.server"],
-      "cwd": "/path/to/torch-datadog-mcp",
+      "args": ["run", "--project", "/path/to/torch-datadog-mcp", "datadog-mcp"],
       "env": {
         "DD_API_KEY": "your_api_key_here",
         "DD_APP_KEY": "your_app_key_here",
@@ -328,62 +326,97 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 ### Windows
 Edit `%APPDATA%\\Claude\\claude_desktop_config.json` with similar configuration.
 
-### Alternative: Environment File
-If you prefer to use the `.env` file:
+### Alternative: Using Environment Variables
+If you set environment variables globally, you can omit the `env` section:
 
 ```json
 {
   "mcpServers": {
     "datadog": {
-      "command": "uv",
-      "args": ["run", "python", "-m", "datadog_mcp.server"],
-      "cwd": "/path/to/torch-datadog-mcp"
+      "command": "datadog-mcp"
     }
   }
 }
 ```
 
-## Example Queries
+## Example Usage Patterns
 
 ### Debug Meeting Issues
-```
-Search for logs related to meeting 136666 over the past 7 days
+```python
+# Find all logs for a specific meeting
+search_logs(service="meeting", meeting_id=136666, hours=24)
+
+# Focus on errors for that meeting
+search_logs(service="meeting", meeting_id=136666, status="ERROR", hours=168)
 ```
 
-### Find Integration Errors
-```
-Search for Zoom webhook events for meeting 136667
+### Find Integration Events
+```python
+# Zoom integration events for a meeting
+search_logs(service="integration", provider="zoom", meeting_id=136667)
+
+# All integration activity for a user
+search_logs(service="integration", user_id=214413, hours=48)
 ```
 
 ### Monitor Service Health
-```
-Search for errors in the meeting service over the past 2 hours
+```python
+# Recent errors in meeting service
+search_logs(service="meeting", status="ERROR", hours=2)
+
+# Tasmania space-specific errors
+search_logs(service="tasmania", space_id=168565, status="ERROR", hours=6)
 ```
 
-### Trace Investigation
+### User Activity Tracking
+```python
+# All activity for a user in Tasmania
+search_logs(service="tasmania", actor_email="user@example.com", hours=24)
+
+# User's meeting activity
+search_logs(service="meeting", user_id=214413, hours=12)
 ```
-Search for all logs in trace 1234567890abcdef
+
+### APM Trace Investigation
+```python
+# Find all logs for a trace (works across services)
+get_trace_logs(trace_id="1234567890abcdef", hours=1)
+
+# Track a request across services
+trace_request_flow(request_id="req_abc123", hours=2)
 ```
 
-## Query Patterns
+## Query Architecture
 
-The server uses DataDog's log search syntax. Common patterns:
+The server uses **structured filters** that automatically map to the correct DataDog fields:
 
-- **Service filtering**: `service:meeting`, `service:integration`
-- **Environment filtering**: `env:prod`, `env:staging`
-- **Status filtering**: `status:ERROR`, `status:WARNING`
-- **Custom attributes**: `@meeting_id:123`, `@user_id:456`
-- **Zoom webhooks**: `@payload.payload.object.id:meeting_id`
-- **Whereby webhooks**: `@request_identifiers.resource_id:meeting_id`
+### Structured Filter Benefits
+- **Smart Field Mapping**: `user_id=214413` maps to the right field(s) per service
+- **OR Conditions**: Automatically searches multiple possible field locations
+- **Health Check Exclusion**: Removes noise from health check endpoints
+- **Service-Aware**: Each service has optimized field mappings
+
+### Common Structured Patterns
+```python
+# Service + specific entity
+search_logs(service="meeting", meeting_id=136666)
+
+# User activity across services
+search_logs(service="tasmania", user_id=214413)
+
+# Status filtering with context
+search_logs(service="meeting", meeting_id=136666, status="ERROR")
+
+# Actor-based filtering (email)
+search_logs(service="meeting", actor_email="user@example.com")
+```
 
 ## Default Time Ranges
 
-- General log search: 1 hour
-- Meeting logs: 168 hours (7 days)
-- User logs: 24 hours
-- Webhook events: 168 hours (7 days)
-- Error search: 2 hours
-- Trace search: 1 hour
+- General log search: 24 hours
+- Trace logs: 1 hour
+- Business events: 24 hours
+- Request flow tracing: 1 hour
 
 ## Development
 
@@ -406,9 +439,9 @@ torch-datadog-mcp/
 │       ├── __init__.py
 │       ├── server.py        # FastMCP server with tools
 │       ├── client.py        # DataDog API client
-│       └── settings.py      # Environment configuration
+│       └── filter_config.py # Service-specific filter configuration
 ├── pyproject.toml           # Project configuration
-├── .env.example             # Example environment variables
+├── .env                     # Environment variables (create this)
 ├── README.md                # This file
 └── datadog-mcp.fastmcp.json # FastMCP configuration
 ```
